@@ -1,20 +1,34 @@
 """Candidate selection and focused, provider-independent editorial checkers."""
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
-from .ai import AIJudgmentProvider, Judgment, SpeechTranscriber
+from .ai import AIJudgmentProvider, AIProviderError, Judgment, SpeechTranscriber
 from .media import extract_speech_audio
+
+log = logging.getLogger(__name__)
 
 FINDING_THRESHOLD = 0.80
 STOPWORDS = set("a an and are as at be been but by for from have in into is it its of on or our so that the their there these this to was were what when why will with you your".split())
 
 
 def transcribe(video: Path, workdir: Path, provider: SpeechTranscriber) -> list[dict]:
+    """Extract speech audio then transcribe it.
+
+    Raises AIProviderError only for genuine provider (API) failures.
+    Audio extraction failures are surfaced as-is so callers can distinguish
+    infrastructure problems from transcription problems.
+    """
     audio = workdir / "speech.m4a"
     try:
-        extract_speech_audio(video, audio)
+        try:
+            extract_speech_audio(video, audio)
+        except Exception as exc:
+            # ffmpeg extraction failure — do NOT blame the AI provider
+            log.error("Audio extraction failed before transcription: %s", exc)
+            raise AIProviderError(f"Audio extraction failed: {exc}") from exc
         return provider.transcribe(audio)
     finally:
         audio.unlink(missing_ok=True)

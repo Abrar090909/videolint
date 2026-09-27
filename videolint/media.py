@@ -174,4 +174,5 @@ def extract_speech_audio(path: Path, destination: Path) -> None:
     result = run("-y", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000",
                  "-b:a", "48k", "-c:a", "aac", str(destination), timeout=180)
     if result.returncode:
-        raise ValueError("Could not extract speech audio.")
+        stderr_tail = result.stderr.decode("utf-8", "replace")[-300:].strip()
+        raise ValueError(f"Could not extract speech audio. ffmpeg: {stderr_tail}")

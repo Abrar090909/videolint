@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import urllib.request
 from pathlib import Path
@@ -11,6 +13,8 @@ from google.genai import types
 
 from .ai import AIProviderError, Judgment
 from . import media
+
+log = logging.getLogger(__name__)
 
 
 JUDGMENT_SCHEMA = {
@@ -28,7 +32,12 @@ JUDGMENT_SCHEMA = {
 def _safe_error(exc: Exception) -> AIProviderError:
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     suffix = f" (HTTP {code})" if isinstance(code, int) else ""
-    return AIProviderError(f"Gemini {type(exc).__name__}{suffix}; checker could not complete")
+    # Include the original exception message so the real cause is visible in job reports
+    original = str(exc).strip()
+    detail = f": {original}" if original else ""
+    if os.environ.get("VIDEOLINT_DEV_MODE") == "1":
+        log.exception("Gemini %s%s%s", type(exc).__name__, suffix, detail)
+    return AIProviderError(f"Gemini {type(exc).__name__}{suffix}; checker could not complete{detail}")
 
 
 def _offset_ms(value: str) -> int:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from . import ai, editorial, media
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -44,7 +47,15 @@ def save_job(job: dict) -> None:
     with LOCK:
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(path)
+        # Windows + OneDrive can briefly lock the destination; retry a few times.
+        for attempt in range(5):
+            try:
+                temp.replace(path)
+                return
+            except OSError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
 
 def stage(job: dict, status: str) -> None:
@@ -61,6 +72,8 @@ def check(job: dict, checker_id: str, callback) -> list[dict]:
                   "latencyMs": round((time.perf_counter() - started) * 1000)}
         job["issues"].extend(issues)
     except Exception as exc:
+        if os.environ.get("VIDEOLINT_DEV_MODE") == "1":
+            log.exception("Checker %s failed: %s", checker_id, exc)
         result = {"checkerId": checker_id, "status": "failed", "issues": [],
                   "error": str(exc)[:300], "latencyMs": round((time.perf_counter() - started) * 1000)}
     job["checkers"].append(result)
@@ -149,14 +162,25 @@ def process(job_id: str) -> None:
             else:
                 stage(job, "transcribing")
                 check(job, "transcript", lambda: _run_transcript(job, video, _job_path(job_id), transcriber))
-                if job["checkers"][-1]["status"] == "failed":
-                    job["debug"]["transcript"] = "FAILED"
+                last_checker = job["checkers"][-1]
+                if last_checker["status"] == "failed":
+                    err = last_checker.get("error", "")
+                    # Distinguish audio-extraction failures from Gemini API failures
+                    if "Audio extraction failed" in err:
+                        job["debug"]["transcript"] = "FAILED"
+                        job["debug"]["transcriptError"] = err
+                    else:
+                        job["debug"]["transcript"] = "FAILED"
+                        job["debug"]["transcriptError"] = err
+                    if os.environ.get("VIDEOLINT_DEV_MODE") == "1":
+                        log.error("Transcript checker failed: %s", err)
                 elif job["transcript"]:
                     job["debug"]["transcript"] = "SUCCESS"
                 else:
+                    # Gemini returned empty — no intelligible speech found
                     job["debug"]["transcript"] = "NO SPEECH"
-                    job["checkers"][-1]["status"] = "skipped"
-                    job["checkers"][-1]["reason"] = "No speech detected in audio"
+                    last_checker["status"] = "skipped"
+                    last_checker["reason"] = "No speech detected in audio"
                 save_job(job)
         else:
             job["debug"]["transcript"] = "SKIPPED"
@@ -174,16 +198,24 @@ def process(job_id: str) -> None:
             for name in ("interrupted_thought", "repetition", "ending", "topic_alignment"):
                 skipped(job, name, unavailable)
         else:
+            segments = job["transcript"]
             def for_checker(name: str) -> ai.AIJudgmentProvider:
                 return (RecordedJudgmentProvider(provider, job, name) if
                         os.environ.get("VIDEOLINT_DEV_MODE") == "1" else provider)
-            if job["shots"]:
-                check(job, "interrupted_thought", lambda: editorial.InterruptedThoughtChecker().run(job["transcript"], job["shots"], for_checker("interrupted_thought")))
+            # Interrupted thought: only meaningful when there are actual cuts (>1 shot)
+            cuts = [s for s in job["shots"][1:]] if job["shots"] else []
+            if len(cuts) >= 1:
+                check(job, "interrupted_thought", lambda: editorial.InterruptedThoughtChecker().run(segments, job["shots"], for_checker("interrupted_thought")))
             else:
-                skipped(job, "interrupted_thought", "Shot boundaries unavailable")
-            check(job, "repetition", lambda: editorial.RepetitionChecker().run(job["transcript"], for_checker("repetition")))
-            check(job, "ending", lambda: editorial.EndingCompletenessChecker().run(job["transcript"], metadata["durationMs"], for_checker("ending")))
-            check(job, "topic_alignment", lambda: editorial.GoalAlignmentChecker().run(job["goal"], job["transcript"], metadata["durationMs"], for_checker("topic_alignment")))
+                skipped(job, "interrupted_thought", "No cut candidates detected (single continuous shot)")
+            # Repetition: only when enough transcript words exist to make a comparison meaningful
+            total_words = sum(len(s["text"].split()) for s in segments)
+            if total_words >= 20:
+                check(job, "repetition", lambda: editorial.RepetitionChecker().run(segments, for_checker("repetition")))
+            else:
+                skipped(job, "repetition", f"Transcript too short for repetition analysis ({total_words} words; need ≥20)")
+            check(job, "ending", lambda: editorial.EndingCompletenessChecker().run(segments, metadata["durationMs"], for_checker("ending")))
+            check(job, "topic_alignment", lambda: editorial.GoalAlignmentChecker().run(job["goal"], segments, metadata["durationMs"], for_checker("topic_alignment")))
         job["issues"].sort(key=lambda issue: (issue["startMs"], issue["id"]))
         stage(job, "complete")
     except Exception as exc:
@@ -383,6 +415,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
+    if os.environ.get("VIDEOLINT_DEV_MODE") == "1":
+        import logging as _logging
+        _logging.basicConfig(
+            level=_logging.DEBUG,
+            format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
     DATA.mkdir(exist_ok=True)
     for report in DATA.glob("*/report.json"):
         try:
