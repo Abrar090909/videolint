@@ -1,0 +1,11 @@
+.vendor/
+.venv/
+data/
+__pycache__/
+*.pyc
+.env
+*.md
+.vercel/
+node_modules/
+
+.vercel
