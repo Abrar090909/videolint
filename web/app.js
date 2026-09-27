@@ -34,8 +34,9 @@ async function health() {
     maxUploadBytes = h.maxUploadBytes || maxUploadBytes;
     const provider = h.aiProvider === 'jev' ? 'Jev' : h.aiProvider === 'gemini' ? 'Gemini' : h.aiProvider;
     statusEl.classList.remove('unavailable');
-    statusEl.textContent = hosted ? 'Hosted technical review' : `Engine ready · ${h.aiConfigured ? `${provider} configured` : `${provider} key missing`}${h.aiProvider === 'jev' && !h.transcriptionConfigured ? ' · Gemini transcription key missing' : ''}`;
-  } catch { statusEl.classList.add('unavailable'); statusEl.textContent = 'Engine unavailable'; }
+    statusEl.hidden = hosted;
+    statusEl.textContent = hosted ? '' : `Engine ready · ${h.aiConfigured ? `${provider} configured` : `${provider} key missing`}${h.aiProvider === 'jev' && !h.transcriptionConfigured ? ' · Gemini transcription key missing' : ''}`;
+  } catch { statusEl.hidden = false; statusEl.classList.add('unavailable'); statusEl.textContent = 'Engine unavailable'; }
 }
 
 async function home() {

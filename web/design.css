@@ -28,3 +28,19 @@ body{line-height:1.5}
 @media(max-width:900px){.editor-grid{grid-template-columns:minmax(0,1fr) 310px}.media-panel{display:none}}
 @media(max-width:680px){.editor-grid{grid-template-columns:minmax(0,1fr)}.assistant-panel{border-left:0;border-top:1px solid var(--line);padding:20px}.assistant-welcome{padding-top:0}.assistant-panel .panel-title{display:flex}.brief-presets{padding-left:0;margin-bottom:18px}.goal-input{min-height:95px}.home-timeline{display:none}.intro{font-size:16px;max-width:360px}.home-heading h1{font-size:clamp(34px,7.7vw,46px)}.editor-tag{display:none}.project-name{max-width:100%}.history{grid-template-columns:1fr}.metric-strip{gap:16px 24px}.metric strong{font-size:17px}.metric-label{font-size:12px}.review h1{font-size:29px}.review-goal{font-size:15px}.review-top{flex-direction:column}.engine-status{font-size:12px}.footer{font-size:12px}.dropzone strong{font-size:25px}.stage-row{gap:10px}.player-topbar>span:last-child{display:none}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;scroll-behavior:auto!important;transition:none!important}}
+/* Phone layout */
+@media(max-width:480px){
+  .topbar{height:64px;padding:0 16px;gap:12px}
+  .brand{font-size:21px;min-width:0}.brand svg{width:24px;height:24px}
+  .top-actions{gap:8px;min-width:0}.top-actions .primary{min-height:38px;padding:8px 11px;font-size:13px}.engine-status{max-width:104px;font-size:11px;overflow-wrap:anywhere}
+  .landing{padding:24px 10px 38px}.home-heading{margin-bottom:28px}.home-heading h1{font-size:clamp(32px,10vw,42px);letter-spacing:-1.4px}.intro{font-size:15px;line-height:1.55;margin:20px auto}.intro br{display:none}
+  .hero-actions{display:grid;grid-template-columns:1fr 1fr;width:100%;gap:8px}.hero-actions .primary,.hero-actions .subtle{width:100%;padding:10px 8px}
+  .editor{border-radius:10px}.editor-top{height:46px;padding:0 12px}.project-name{max-width:100%}
+  .preview-panel{padding:8px 8px 0}.preview-surface{min-height:225px}.dropzone{padding:24px 12px}.film-ring{margin-bottom:16px}.dropzone p{margin:8px 0 16px}.preview-controls{height:46px}.preview-controls .transport{gap:8px}
+  .assistant-panel{padding:16px 12px}.assistant-welcome{font-size:14px}.brief-presets{display:grid;grid-template-columns:1fr 1fr;gap:7px}.brief-presets button{min-height:42px;text-align:left}.composer{padding:11px}.goal-input{min-height:88px}
+  .library-section{margin-top:30px}.section-heading h2{font-size:24px}.history-row{padding:15px 13px}
+  .review{padding:20px 10px 38px}.review-top{gap:16px;margin-bottom:18px}.review h1{font-size:27px}.review-tools{display:grid;grid-template-columns:1fr 1fr;width:100%}.review-tools .ghost{width:100%;min-width:0;padding:9px 7px}.metric-strip{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:13px 0 18px}.metric{min-width:0;flex-direction:column;align-items:flex-start;gap:1px}.metric-label{line-height:1.35}
+  .player-topbar,.player-meta{padding:11px 12px}.player-topbar{display:block}.player-topbar strong{display:block}.timeline-area{padding:15px 11px}.ticks span:nth-child(even){display:none}.legend{gap:10px}.issue-header,.issue-card,.analysis-panel{padding:16px 13px}.issue-header h2{font-size:24px}.filters{gap:7px}.filter{min-height:38px}.issue-meta{gap:6px}.feedback{display:grid;grid-template-columns:1fr 1fr}.feedback button{width:100%;min-height:42px}.stage-row{display:grid;grid-template-columns:68px minmax(0,1fr)}
+  .processing{margin:24px 10px;padding:42px 18px}.processing h2{font-size:27px}
+  .footer{padding:22px 16px}.footer span:last-child{display:none}
+}
