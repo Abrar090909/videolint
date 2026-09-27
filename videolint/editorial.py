@@ -206,6 +206,165 @@ class EndingCompletenessChecker:
 class GoalAlignmentChecker:
     id = "topic_alignment"
 
+    def extract_requirements(self, goal: str) -> list[dict]:
+        """Split common visual, audio, duration, and subjective constraints into claims.
+
+        Unknown goal language is retained as an unverified claim instead of silently
+        disappearing from the alignment report.
+        """
+        text = goal.lower()
+        claims = []
+        def add(claim_id: str, label: str, source: str, question: str = "") -> None:
+            claims.append({"id": claim_id, "requirement": label, "source": source,
+                           "question": question})
+
+        if re.search(r"\b(jungle|rainforest|forest)\b", text):
+            add("jungle_environment", "Jungle environment present", "visual",
+                "Do the sampled video frames visibly show a jungle or dense tropical forest?")
+        if re.search(r"\b(continuous movement|continuous motion|moving through|movement through|move through)\b", text):
+            add("continuous_movement", "Continuous movement through the environment", "visual",
+                "Do the sampled frames support continuous movement through the environment? Only say yes when visible evidence supports motion; still frames alone may be insufficient.")
+        if re.search(r"\b(multiple people|group|people|person|people present)\b", text):
+            add("multiple_people_present", "Multiple people present", "visual",
+                "Are at least two people visibly present in the sampled video frames?")
+        if re.search(r"\b(voices?|audible|speaking|people.*sound|group.*voice)\b", text):
+            add("people_audible", "People or speech audible", "speech_audio",
+                "Does the audio contain clearly audible human speech or vocal activity?")
+        if re.search(r"\b(natural|environmental|ambient|nature)\b.*\b(sound|audio|noise)\b|\b(sound|audio)\b.*\b(natural|environmental|ambient|nature)\b|\bnatural environment\b.*\b(audible|clearly audible)\b", text):
+            add("natural_environmental_audio", "Natural environmental audio present", "audio_semantic",
+                "Does the audio contain natural environmental sounds (such as wind, water, insects, birds, or foliage), rather than only speech or music?")
+        duration = re.search(r"\b(\d{1,3})\s*[- ]?\s*(second|sec|minute|min)s?\b", text)
+        if duration:
+            target = int(duration.group(1)) * (60 if duration.group(2).startswith("min") else 1)
+            add("duration", f"Approximately {target} seconds", "duration_rule")
+            claims[-1]["targetSeconds"] = target
+        if re.search(r"\b(energetic|immersive|exciting|adventure feel|adventurous)\b", text):
+            add("energetic_immersive_feel", "Energetic, immersive adventure feel", "multimodal_semantic",
+                "Taken together, do the sampled visuals and available audio create an energetic, immersive adventure feel? Base this only on supplied evidence.")
+        if not claims:
+            add("goal_content", goal.strip(), "unmapped")
+        return claims
+
+    def verify(self, goal: str, segments: list[dict], duration_ms: int,
+               audio_windows: list[dict], frames: list[dict],
+               vision_provider: AIJudgmentProvider | None,
+               audio_provider: AIJudgmentProvider | None = None,
+               audio_path: Path | None = None,
+               transcript_status: str | None = None) -> dict:
+        """Evaluate goal claims against only the evidence sources that can support them."""
+        claims = self.extract_requirements(goal)
+        frame_evidence = [{"timestampMs": frame["timestampMs"]} for frame in frames]
+        observations = []
+        image_decisions = {}
+        image_error = None
+        visual_claims = [claim for claim in claims if claim["source"] in
+                         ("visual", "multimodal_semantic")]
+        if vision_provider and frames:
+            try:
+                analysis = vision_provider.analyze_goal_with_images(
+                    goal, visual_claims, [f["path"] for f in frames],
+                    [f["timestampMs"] for f in frames],
+                    {"transcript": " ".join(s["text"] for s in segments)[:1200],
+                     "nonSilentWindowCount": sum(w.get("peak", 0) > 0 for w in audio_windows)})
+                observations = analysis.get("observations", [])
+                image_decisions = {row["claimId"]: row for row in analysis.get("claims", [])}
+            except Exception as exc:
+                image_error = str(exc)
+                log.warning("Could not analyze goal against sampled frames: %s", exc)
+        audible_windows = [w for w in audio_windows if w.get("peak", 0) > 0]
+        speech = " ".join(s["text"] for s in segments if s.get("text", "").strip())
+        audio_claims = [claim for claim in claims if claim["source"] == "audio_semantic" or
+                        (claim["source"] == "speech_audio" and not speech)]
+        audio_decisions = {}
+        audio_error = None
+        if audio_provider and audio_path and audible_windows and audio_claims:
+            try:
+                analysis = audio_provider.analyze_goal_with_audio(
+                    goal, audio_claims, audio_path,
+                    {"nonSilentWindowCount": len(audible_windows),
+                     "totalWindowCount": len(audio_windows)})
+                audio_decisions = {row["claimId"]: row for row in analysis.get("claims", [])}
+            except Exception as exc:
+                audio_error = str(exc)
+                log.warning("Could not analyze goal against audio: %s", exc)
+        results = []
+        for claim in claims:
+            result = {k: v for k, v in claim.items() if k != "question"}
+            result.update({"status": "UNVERIFIED", "component": None,
+                           "evidence": {}, "reason": "Required evidence is unavailable."})
+            if claim["source"] == "duration_rule":
+                target = claim["targetSeconds"]
+                actual = duration_ms / 1000
+                tolerance = max(2, target * 0.1)
+                result.update(status="PASS" if abs(actual-target) <= tolerance else "FAIL",
+                              component="Rule", reason=f"Measured duration is {actual:.2f}s; target is approximately {target}s.",
+                              evidence={"durationMs": duration_ms, "targetSeconds": target,
+                                        "toleranceSeconds": tolerance})
+            elif claim["source"] == "visual":
+                result["evidence"] = {"sampledFrames": frame_evidence,
+                                      "visualObservations": observations}
+                decision = image_decisions.get(claim["id"])
+                if decision:
+                    result.update(status=("PASS" if decision["verdict"] == "yes" else
+                                          "FAIL" if decision["verdict"] == "no" else "UNVERIFIED"),
+                                  component="Gemini", reason=decision["reason"],
+                                  confidence=decision["confidence"])
+                elif vision_provider and frames:
+                    result.update(component="Gemini", reason=image_error or "Gemini did not return a decision for this claim.")
+                else:
+                    result["reason"] = "No sampled frames or vision provider are available."
+            elif claim["source"] == "speech_audio":
+                result["evidence"] = {"transcript": speech[:1200],
+                    "transcriptStatus": transcript_status or ("SUCCESS" if speech else "NO_SPEECH"),
+                    "nonSilentWindowCount": len(audible_windows)}
+                if speech:
+                    result.update(status="PASS", component="Gemini", reason="Timestamped speech is present in the transcript.")
+                elif not audible_windows:
+                    result.update(status="FAIL", component="Rule", reason="FFmpeg measured no audible audio in the analyzed windows.")
+                elif claim["id"] in audio_decisions:
+                    decision = audio_decisions[claim["id"]]
+                    result.update(status=("PASS" if decision["verdict"] == "yes" else
+                                          "FAIL" if decision["verdict"] == "no" else "UNVERIFIED"),
+                                  component="Gemini", reason=decision["reason"],
+                                  confidence=decision["confidence"])
+                elif audio_provider and audio_path and audible_windows:
+                    result.update(component="Gemini", reason=audio_error or "Gemini did not return a decision for this claim.")
+                else:
+                    result["reason"] = "Audio is present, but no transcript or audio classifier can establish human vocal activity."
+            elif claim["source"] == "audio_semantic":
+                result["evidence"] = {"nonSilentWindowCount": len(audible_windows),
+                    "totalWindowCount": len(audio_windows)}
+                if not audible_windows:
+                    result.update(status="FAIL", component="Rule",
+                                  reason="FFmpeg found no non-silent audio windows, so natural environmental audio is absent.")
+                elif claim["id"] in audio_decisions:
+                    decision = audio_decisions[claim["id"]]
+                    result.update(status=("PASS" if decision["verdict"] == "yes" else
+                                          "FAIL" if decision["verdict"] == "no" else "UNVERIFIED"),
+                                  component="Gemini", reason=decision["reason"],
+                                  confidence=decision["confidence"])
+                elif audio_provider and audio_path and audible_windows:
+                    result.update(component="Gemini", reason=audio_error or "Gemini did not return a decision for this claim.")
+                else:
+                    result["reason"] = "FFmpeg can measure signal levels but cannot identify natural environmental sounds."
+            elif claim["source"] == "multimodal_semantic":
+                result["evidence"] = {"sampledFrames": frame_evidence,
+                    "visualObservations": observations, "transcript": speech[:1200],
+                    "nonSilentWindowCount": len(audible_windows)}
+                decision = image_decisions.get(claim["id"])
+                if decision:
+                    result.update(status=("PASS" if decision["verdict"] == "yes" else
+                                          "FAIL" if decision["verdict"] == "no" else "UNVERIFIED"),
+                                  component="Gemini", reason=decision["reason"],
+                                  confidence=decision["confidence"])
+                elif vision_provider and frames:
+                    result.update(component="Gemini", reason=image_error or "Gemini did not return a decision for this claim.")
+                else:
+                    result["reason"] = "Sampled visuals are unavailable for the subjective judgment."
+            results.append(result)
+        return {"requirements": results, "visualObservations": observations,
+                "sampledFrameCount": len(frames)}
+
     def run(self, goal: str, segments: list[dict], duration_ms: int,
             provider: AIJudgmentProvider) -> list[dict]:
         chunks = _chunks(segments)
@@ -243,4 +402,3 @@ def ending(segments: list[dict], duration_ms: int, provider: AIJudgmentProvider)
 def topic_alignment(goal: str, segments: list[dict], duration_ms: int,
                     provider: AIJudgmentProvider) -> list[dict]:
     return GoalAlignmentChecker().run(goal, segments, duration_ms, provider)
-

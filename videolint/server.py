@@ -186,19 +186,19 @@ def process(job_id: str) -> None:
             job["debug"]["transcript"] = "SKIPPED"
             skipped(job, "transcript", "Gemini word-timestamp transcription supports up to 30 minutes")
         stage(job, "verifying")
-        if not job["transcript"]:
+        segments = job["transcript"]
+        if not segments:
             reason = ("No speech detected; speech-dependent checks are not applicable" if
                       job["debug"]["transcript"] == "NO SPEECH" else
                       "Transcript failed; speech-dependent checks could not run" if
                       job["debug"]["transcript"] == "FAILED" else
                       "No timestamped transcript available")
-            for name in ("interrupted_thought", "repetition", "ending", "topic_alignment"):
+            for name in ("interrupted_thought", "repetition", "ending"):
                 skipped(job, name, reason)
         elif provider is None:
-            for name in ("interrupted_thought", "repetition", "ending", "topic_alignment"):
+            for name in ("interrupted_thought", "repetition", "ending"):
                 skipped(job, name, unavailable)
         else:
-            segments = job["transcript"]
             def for_checker(name: str) -> ai.AIJudgmentProvider:
                 return (RecordedJudgmentProvider(provider, job, name) if
                         os.environ.get("VIDEOLINT_DEV_MODE") == "1" else provider)
@@ -215,7 +215,10 @@ def process(job_id: str) -> None:
             else:
                 skipped(job, "repetition", f"Transcript too short for repetition analysis ({total_words} words; need ≥20)")
             check(job, "ending", lambda: editorial.EndingCompletenessChecker().run(segments, metadata["durationMs"], for_checker("ending")))
-            check(job, "topic_alignment", lambda: editorial.GoalAlignmentChecker().run(job["goal"], segments, metadata["durationMs"], for_checker("topic_alignment")))
+
+        # Goal alignment always runs. It evaluates duration/audio rules without a
+        # transcript and marks any claim lacking its evidence source UNVERIFIED.
+        check(job, "topic_alignment", lambda: _run_goal_alignment(job, video, metadata))
         job["issues"].sort(key=lambda issue: (issue["startMs"], issue["id"]))
         stage(job, "complete")
     except Exception as exc:
@@ -245,6 +248,33 @@ def _run_transcript(job: dict, video: Path, directory: Path, provider: ai.Speech
     job["transcript"] = editorial.validate_transcript(
         editorial.transcribe(video, directory, provider), job["metadata"]["durationMs"])
     return []
+
+
+def _run_goal_alignment(job: dict, video: Path, metadata: dict) -> list[dict]:
+    workdir = _job_path(job["id"])
+    frames = media.sample_frames(video, metadata["durationMs"], workdir / "goal_frames")
+    try:
+        vision_provider = ai.get_gemini_provider()
+    except ai.AIProviderError:
+        vision_provider = None
+    audio_path = workdir / "goal_audio.m4a"
+    if metadata.get("hasAudio"):
+        try:
+            media.extract_speech_audio(video, audio_path)
+        except Exception as exc:
+            log.warning("Goal audio extraction failed: %s", exc)
+            audio_path = None
+    else:
+        audio_path = None
+    try:
+        job["goalVerification"] = editorial.GoalAlignmentChecker().verify(
+            job["goal"], job.get("transcript", []), metadata["durationMs"],
+            job.get("audio", []), frames, vision_provider, vision_provider, audio_path,
+            job.get("debug", {}).get("transcript"))
+        return []
+    finally:
+        if audio_path is not None:
+            audio_path.unlink(missing_ok=True)
 
 
 class Handler(BaseHTTPRequestHandler):

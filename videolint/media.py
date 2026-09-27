@@ -176,3 +176,29 @@ def extract_speech_audio(path: Path, destination: Path) -> None:
     if result.returncode:
         stderr_tail = result.stderr.decode("utf-8", "replace")[-300:].strip()
         raise ValueError(f"Could not extract speech audio. ffmpeg: {stderr_tail}")
+
+
+def sample_frames(path: Path, duration_ms: int, destination: Path,
+                  count: int = 6, width: int = 512) -> list[dict]:
+    """Extract *count* representative JPEG frames spread evenly across the video.
+
+    Returns a list of ``{"timestampMs": int, "path": Path}`` sorted by time.
+    """
+    if duration_ms <= 0 or count < 1:
+        return []
+    destination.mkdir(parents=True, exist_ok=True)
+    # Spread timestamps evenly, avoiding the very first and last frame
+    step = duration_ms / (count + 1)
+    timestamps = [round(step * (i + 1)) for i in range(count)]
+    frames = []
+    for idx, ts_ms in enumerate(timestamps):
+        out = destination / f"frame_{idx:03d}.jpg"
+        ts_sec = ts_ms / 1000
+        result = run(
+            "-y", "-ss", f"{ts_sec:.3f}", "-i", str(path),
+            "-frames:v", "1", "-vf", f"scale={width}:-2",
+            "-q:v", "3", str(out), timeout=30,
+        )
+        if result.returncode == 0 and out.is_file() and out.stat().st_size > 0:
+            frames.append({"timestampMs": ts_ms, "path": out})
+    return frames
